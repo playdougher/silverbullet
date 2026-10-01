@@ -32,6 +32,60 @@ import type { ClickEvent } from "@silverbulletmd/silverbullet/type/client";
 import { tagPrefix } from "../index/constants.ts";
 import { identityId } from "../index/identity.ts";
 
+const denoteLinkPattern = /^denote:(\d{8}T\d{6})$/;
+
+/**
+ * Resolves a Denote URI to a page by its stable timestamp identifier.
+ *
+ * A Denote page may be renamed or moved, but its filename keeps the form
+ * `<ID>--<slug>.md`; matching the basename therefore remains valid across
+ * both operations. Returning true means the URI was a Denote URI and has
+ * been handled (including a missing or ambiguous target).
+ */
+async function navigateDenoteLink(url: string, inNewWindow: boolean) {
+  if (!url.startsWith("denote:")) {
+    return false;
+  }
+  const match = denoteLinkPattern.exec(url);
+  if (!match) {
+    await editor.flashNotification(`Invalid Denote link: ${url}`, "error");
+    return true;
+  }
+
+  const id = match[1];
+  const candidates = (await space.listPages()).filter((page) =>
+    page.name.split("/").pop()!.startsWith(`${id}--`),
+  );
+
+  if (candidates.length === 0) {
+    await editor.flashNotification(`Denote link not found: ${id}`, "error");
+    return true;
+  }
+
+  if (candidates.length === 1) {
+    await editor.navigate(candidates[0].name, false, inNewWindow);
+    return true;
+  }
+
+  const selected = await editor.filterBox(
+    "Which Denote page?",
+    candidates.map((page) => ({
+      name: getNameFromPath(page.name as Path),
+      description: folderName(page.name as Path) || "space root",
+      path: page.name,
+    })),
+    `Denote ID “${id}” matches ${candidates.length} pages. Pick the one to open.`,
+  );
+  if (selected) {
+    await editor.navigate(
+      (selected as unknown as { path: Path }).path,
+      false,
+      inNewWindow,
+    );
+  }
+  return true;
+}
+
 async function actionClickOrActionEnter(
   mdTree: ParseTree | null,
   inNewWindow = false,
@@ -129,6 +183,9 @@ async function actionClickOrActionEnter(
       const url = urlNode.children![0].text!;
       if (url.length <= 1) {
         return editor.flashNotification("Empty link, ignoring", "error");
+      }
+      if (await navigateDenoteLink(url, inNewWindow)) {
+        return;
       }
       if (isLocalURL(url)) {
         const link = resolveMarkdownLink(currentPage, decodeURI(url));
